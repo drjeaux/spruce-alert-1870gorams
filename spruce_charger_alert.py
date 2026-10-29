@@ -7,7 +7,9 @@ import json
 import os
 import re
 import urllib.request
+from datetime import datetime, time
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from playwright.sync_api import sync_playwright
 
 URL = "https://driver.chargepoint.com/stations/1841901"
@@ -65,6 +67,10 @@ def notify(count):
 
 
 def main():
+    now = datetime.now(ZoneInfo("America/Denver"))
+    if now.weekday() >= 5 or not (time(8) <= now.time() < time(17)):
+        print("Outside 8:00 a.m.–5:00 p.m. Denver time, Monday–Friday; no check or alert.", flush=True)
+        return
     current = read_ports()
     print(f"Verified statuses: {current} of 2 connectors available", flush=True)
     previous = json.loads(STATE.read_text()) if STATE.exists() else None
