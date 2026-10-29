@@ -12,9 +12,15 @@ from playwright.sync_api import sync_playwright
 
 URL = "https://driver.chargepoint.com/stations/1841901"
 STATE = Path("charger_state.json")
-PORT = re.compile(r"^port\s*([12])(?:\s*[:#-].*)?$", re.I)
-AVAILABLE = re.compile(r"^(?:available|free|open)$", re.I)
-BUSY = re.compile(r"^(?:in use|in-use|occupied|unavailable|charging|reserved|out of service|offline|unknown)$", re.I)
+# The public page lists each connector as status | charging speed | power | plug.
+# A separate station-level status appears before the connector listings; ignore it.
+CONNECTOR = re.compile(
+    r"\b(Available|Free|Open|In Use|Occupied|Charging|Unavailable|Reserved|"
+    r"Out of Service|Offline)\s*\|\s*"
+    r"\d+(?:\.\d+)?\s*mi\s*/\s*hour\s*\|\s*"
+    r"\d+(?:\.\d+)?\s*kW\s*\|\s*\(J1772\)",
+    re.I,
+)
 
 
 def read_ports():
@@ -28,35 +34,29 @@ def read_ports():
         finally:
             browser.close()
 
-    result = {}
-    for i, line in enumerate(lines):
-        match = PORT.fullmatch(line)
-        if not match:
-            continue
-        port = match.group(1)
-        following = []
-        for item in lines[i + 1:i + 9]:
-            if PORT.fullmatch(item):
-                break
-            following.append(item)
-        found = ["available" if AVAILABLE.fullmatch(s) else "busy" for s in following
-                 if AVAILABLE.fullmatch(s) or BUSY.fullmatch(s)]
-        print(f"Port {port}: nearby text {following!r}; statuses {found!r}", flush=True)
-        if len(found) != 1 or port in result:
-            raise ValueError(f"Port {port} is ambiguous; no notification sent")
-        result[port] = found[0]
-    if set(result) != {"1", "2"}:
-        print("Page text excerpt:", " | ".join(lines[:1000])[:9000], flush=True)
-        raise ValueError("Cannot verify both ports from the public page; no notification sent")
-    return result
+    text = " | ".join(lines)
+    # Only inspect this station's connector list, not reviews or map results.
+    marker = "COLO STATE UNIV / SPRUCE HALL 1 | 150 Old Main Dr, Fort Collins | ChargePoint Network | "
+    if marker not in text or " | Report a Problem" not in text.split(marker, 1)[1]:
+        print("Page text excerpt:", text[:9000], flush=True)
+        raise ValueError("Cannot locate this station's connector list; no notification sent")
+    section = text.split(marker, 1)[1].split(" | Report a Problem", 1)[0]
+    matches = list(CONNECTOR.finditer(section))
+    plugs = re.findall(r"\(J1772\)", section, re.I)
+    if len(plugs) != 2 or len(matches) != 2:
+        print("Page text excerpt:", text[:9000], flush=True)
+        raise ValueError("Cannot verify both connectors from the public page; no notification sent")
+    statuses = [match.group(1).lower() for match in matches]
+    available_count = sum(status in {"available", "free", "open"} for status in statuses)
+    print(f"Two connector statuses in displayed order: {statuses!r}", flush=True)
+    return available_count
 
 
-def notify(ports):
+def notify(count):
     topic = os.environ["NTFY_TOPIC"]
-    names = ", ".join(f"port {p}" for p in ports)
     request = urllib.request.Request(
         f"https://ntfy.sh/{topic}",
-        data=f"Spruce Hall 1: {names} available. Check status before driving over: {URL}".encode(),
+        data=f"Spruce Hall 1: {count} of 2 connectors available. Check before driving over: {URL}".encode(),
         headers={"Title": "Spruce Hall charger available", "Click": URL, "Tags": "electric_plug"},
         method="POST",
     )
@@ -66,18 +66,15 @@ def notify(ports):
 
 def main():
     current = read_ports()
-    print(f"Verified statuses: {current}", flush=True)
+    print(f"Verified statuses: {current} of 2 connectors available", flush=True)
     previous = json.loads(STATE.read_text()) if STATE.exists() else None
     if previous is None:
         print("First verified check: saving baseline; no alert yet.", flush=True)
-    else:
-        newly_free = [p for p in ("1", "2") if current[p] == "available"
-                      and previous.get(p) != "available"]
-        if newly_free:
-            notify(newly_free)
-            print(f"Notified about port(s): {newly_free}", flush=True)
+    elif current > previous:
+        notify(current)
+        print(f"Notified: {current} of 2 connectors available", flush=True)
     if previous != current:
-        STATE.write_text(json.dumps(current, indent=2) + "\n")
+        STATE.write_text(json.dumps(current) + "\n")
 
 
 if __name__ == "__main__":
