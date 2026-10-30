@@ -19,7 +19,7 @@ STATE = Path("charger_state.json")
 CONNECTOR = re.compile(
     r"\b(Available|Free|Open|In Use|Occupied|Charging|Unavailable|Reserved|"
     r"Out of Service|Offline)\s*\|\s*"
-    r"\d+(?:\.\d+)?\s*mi\s*/\s*hour\s*\|\s*"
+    r"\d+(?:\.\d+)?\s*(?:mi|km)\s*/\s*hour\s*\|\s*"
     r"\d+(?:\.\d+)?\s*kW\s*\|\s*\(J1772\)",
     re.I,
 )
